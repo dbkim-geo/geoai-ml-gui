@@ -144,12 +144,12 @@ class TrainWorker(QThread):
 
         # Save selection table
         os.makedirs(p["output_dir"], exist_ok=True)
-        sel_path = os.path.join(p["output_dir"], "mgwr_distance_selection.csv")
+        sel_path = os.path.join(p["output_dir"], "scale_opt_selection.csv")
         selection_df.to_csv(sel_path, index=False, encoding="utf-8-sig")
         self.log.emit(f"\n최적 거리 선택 결과: {sel_path}")
         self.log.emit(f"선택된 변수 수: {len(best_cols)}")
 
-        mgwr_dir = os.path.join(p["output_dir"], "mgwr")
+        mgwr_dir = os.path.join(p["output_dir"], "scale_opt")
         results = train_models(
             csv_path=p["csv_path"],
             target_col=p["target_col"],

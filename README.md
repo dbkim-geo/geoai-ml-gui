@@ -106,10 +106,10 @@ output_dir/
 │   ├── metrics_summary.csv
 │   └── charts/
 ├── 200m/ ...
-├── mgwr/                            # 변수별 최적 거리 선택 모드
+├── scale_opt/                       # 변수별 최적 스케일 선택 모드 (Scale of Effect)
 │   ├── ModelName.pkl
 │   └── charts/
-├── mgwr_distance_selection.csv      # 변수별 선택된 최적 거리 결과
+├── scale_opt_selection.csv          # 변수별 선택된 최적 거리 결과 (Scale Optimization)
 └── distance_comparison.png      # 거리별 성능 비교 차트
 ```
 
