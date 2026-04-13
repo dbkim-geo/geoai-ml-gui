@@ -17,7 +17,9 @@ import numpy as np
 import pandas as pd
 import rasterio
 from rasterstats import zonal_stats
+from pyproj import Transformer
 from shapely.geometry import Point, box
+from shapely.ops import transform as shp_transform
 
 warnings.filterwarnings("ignore")
 
@@ -82,7 +84,8 @@ def _reproject_to_raster_crs(buf_gdf: gpd.GeoDataFrame, raster_path: str) -> gpd
 # ---------------------------------------------------------------------------
 
 def _zonal_continuous(
-    buf_gdf: gpd.GeoDataFrame, raster_path: str, prefix: str, nodata
+    buf_gdf: gpd.GeoDataFrame, raster_path: str, prefix: str, nodata,
+    log_cb=None,
 ) -> pd.DataFrame:
     """연속형 래스터 → zonal mean."""
     aligned = _reproject_to_raster_crs(buf_gdf, raster_path)
@@ -93,6 +96,11 @@ def _zonal_continuous(
         nodata=nodata,
         all_touched=True,
     )
+    valid = sum(1 for s in stats if s.get("mean") is not None)
+    if log_cb:
+        log_cb(f"    → 유효 결과: {valid}/{len(stats)}개")
+        if valid == 0:
+            log_cb(f"    [경고] 모든 결과가 NaN입니다. 래스터 Extent·nodata 설정을 확인하세요.")
     return pd.DataFrame({f"{prefix}_mean": [s.get("mean") for s in stats]})
 
 
@@ -224,7 +232,7 @@ def preprocess_training(
 
             try:
                 if rtype == "continuous":
-                    sdf = _zonal_continuous(buf_gdf, rpath, prefix, rinfo["nodata"])
+                    sdf = _zonal_continuous(buf_gdf, rpath, prefix, rinfo["nodata"], log_cb=log)
                 else:
                     sdf = _zonal_categorical(buf_gdf, rpath, prefix, rinfo["nodata"], log_cb=log)
 
@@ -348,6 +356,35 @@ def preprocess_prediction(
     log(f"기준 CRS: {ref_crs}")
     log(f"Extent: ({minx:.4f}, {miny:.4f}, {maxx:.4f}, {maxy:.4f})")
 
+    # --- Raster bounds vs. grid extent 사전 비교 ---
+    log("\n[래스터 범위 확인]")
+    for cfg in raster_configs:
+        try:
+            ri = get_raster_info(cfg["path"])
+            rb = ri["bounds"]
+            rcrs = ri["crs"]
+            # 격자 extent를 래스터 CRS로 변환하여 비교
+            from pyproj import CRS as ProjCRS
+            grid_crs = ProjCRS.from_user_input(ref_crs)
+            raster_crs_obj = ProjCRS.from_user_input(rcrs)
+            if grid_crs != raster_crs_obj:
+                transformer = Transformer.from_crs(grid_crs, raster_crs_obj, always_xy=True)
+                gx0, gy0 = transformer.transform(minx, miny)
+                gx1, gy1 = transformer.transform(maxx, maxy)
+            else:
+                gx0, gy0, gx1, gy1 = minx, miny, maxx, maxy
+            overlap = (gx0 < rb.right and gx1 > rb.left and gy0 < rb.top and gy1 > rb.bottom)
+            epsg = rcrs.to_epsg()
+            crs_label = f"EPSG:{epsg}" if epsg else str(rcrs)[:20]
+            log(
+                f"  {cfg['name']} [{crs_label}]  "
+                f"bounds=({rb.left:.0f},{rb.bottom:.0f},{rb.right:.0f},{rb.top:.0f})  "
+                f"→ {'겹침 OK' if overlap else '[경고] 격자와 겹치지 않음!'}"
+            )
+        except Exception as e:
+            log(f"  {cfg['name']} bounds 확인 실패: {e}")
+    log("")
+
     # --- Create grid points (cell centers) ---
     xs = np.arange(minx + resolution / 2, maxx, resolution)
     ys = np.arange(miny + resolution / 2, maxy, resolution)
@@ -382,7 +419,7 @@ def preprocess_prediction(
 
             try:
                 if rtype == "continuous":
-                    sdf = _zonal_continuous(buf_gdf, rpath, prefix, rinfo["nodata"])
+                    sdf = _zonal_continuous(buf_gdf, rpath, prefix, rinfo["nodata"], log_cb=log)
                 else:
                     sdf = _zonal_categorical(buf_gdf, rpath, prefix, rinfo["nodata"], log_cb=log)
 
