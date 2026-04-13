@@ -48,7 +48,12 @@ def _get_explainer(model, X_bg: pd.DataFrame):
     linear_types = ("ridge", "lasso", "elastic", "logistic", "linear")
 
     if any(t in model_type for t in tree_types):
-        return shap.TreeExplainer(model)
+        try:
+            return shap.TreeExplainer(model)
+        except (ValueError, TypeError):
+            # XGBoost 최신 버전과 구버전 SHAP 간 base_score 호환성 문제 fallback
+            bg = shap.sample(X_bg, min(100, len(X_bg)))
+            return shap.KernelExplainer(model.predict, bg)
     elif any(t in model_type for t in linear_types):
         return shap.LinearExplainer(model, X_bg)
     else:
