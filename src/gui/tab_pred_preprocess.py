@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QSplitter,
+    QStackedWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -88,23 +89,53 @@ class PredPreprocessTab(QWidget):
         gb = QGroupBox("예측 공간 범위 (Extent)")
         lay = QVBoxLayout(gb)
 
-        # Auto-detect from raster
-        row0 = QHBoxLayout()
-        self._chk_auto_extent = QCheckBox("첫 번째 래스터 Extent 자동 감지")
-        self._chk_auto_extent.setChecked(True)
-        self._chk_auto_extent.toggled.connect(self._toggle_extent_inputs)
-        row0.addWidget(self._chk_auto_extent)
-        row0.addStretch()
-        lay.addLayout(row0)
+        # ── Source radio buttons ──────────────────────────────────────────
+        src_row = QHBoxLayout()
+        self._radio_ext_raster = QRadioButton("래스터 자동 감지")
+        self._radio_ext_shp    = QRadioButton("SHP 파일")
+        self._radio_ext_manual = QRadioButton("수동 입력")
+        self._radio_ext_raster.setChecked(True)
+        bg_ext = QButtonGroup(self)
+        for rb in (self._radio_ext_raster, self._radio_ext_shp, self._radio_ext_manual):
+            bg_ext.addButton(rb)
+            src_row.addWidget(rb)
+        src_row.addStretch()
+        lay.addLayout(src_row)
 
-        # Manual extent inputs
-        self._extent_widget = QWidget()
-        ext_lay = QHBoxLayout(self._extent_widget)
-        ext_lay.setContentsMargins(0, 0, 0, 0)
+        # ── Stacked sub-widgets (one per source) ─────────────────────────
+        self._ext_stack = QStackedWidget()
 
+        # Page 0 – raster auto  (just an info label + convenience button)
+        p0 = QWidget()
+        p0_lay = QHBoxLayout(p0)
+        p0_lay.setContentsMargins(4, 2, 4, 2)
+        p0_lay.addWidget(QLabel("첫 번째 래스터의 Extent를 실행 시 자동으로 사용합니다."))
+        btn_load_raster = QPushButton("래스터에서 수동으로 불러오기…")
+        btn_load_raster.clicked.connect(self._load_extent_from_raster)
+        p0_lay.addWidget(btn_load_raster)
+        p0_lay.addStretch()
+        self._ext_stack.addWidget(p0)
+
+        # Page 1 – SHP file
+        p1 = QWidget()
+        p1_lay = QHBoxLayout(p1)
+        p1_lay.setContentsMargins(4, 2, 4, 2)
+        p1_lay.addWidget(QLabel("SHP 파일:"))
+        self._shp_extent_edit = QLineEdit()
+        self._shp_extent_edit.setPlaceholderText("SHP / GPKG / GeoJSON …")
+        p1_lay.addWidget(self._shp_extent_edit)
+        btn_shp = QPushButton("찾기")
+        btn_shp.clicked.connect(self._browse_shp_extent)
+        p1_lay.addWidget(btn_shp)
+        self._ext_stack.addWidget(p1)
+
+        # Page 2 – manual spinboxes
+        p2 = QWidget()
+        p2_lay = QHBoxLayout(p2)
+        p2_lay.setContentsMargins(4, 2, 4, 2)
         for label, attr in [("MinX:", "_ext_minx"), ("MinY:", "_ext_miny"),
                              ("MaxX:", "_ext_maxx"), ("MaxY:", "_ext_maxy")]:
-            ext_lay.addWidget(QLabel(label))
+            p2_lay.addWidget(QLabel(label))
             spin = QDoubleSpinBox()
             spin.setRange(-1e9, 1e9)
             spin.setDecimals(4)
@@ -112,13 +143,18 @@ class PredPreprocessTab(QWidget):
             spin.setValue(0.0)
             spin.setFixedWidth(120)
             setattr(self, attr, spin)
-            ext_lay.addWidget(spin)
+            p2_lay.addWidget(spin)
+        p2_lay.addStretch()
+        self._ext_stack.addWidget(p2)
 
-        ext_lay.addStretch()
-        self._extent_widget.setEnabled(False)
-        lay.addWidget(self._extent_widget)
+        # Wire radio → stack page
+        self._radio_ext_raster.toggled.connect(lambda on: on and self._ext_stack.setCurrentIndex(0))
+        self._radio_ext_shp.toggled.connect(   lambda on: on and self._ext_stack.setCurrentIndex(1))
+        self._radio_ext_manual.toggled.connect(lambda on: on and self._ext_stack.setCurrentIndex(2))
 
-        # Resolution
+        lay.addWidget(self._ext_stack)
+
+        # ── Resolution ───────────────────────────────────────────────────
         row2 = QHBoxLayout()
         self._chk_auto_res = QCheckBox("해상도 자동 감지 (래스터 기준)")
         self._chk_auto_res.setChecked(True)
@@ -134,14 +170,6 @@ class PredPreprocessTab(QWidget):
         row2.addWidget(self._res_spin)
         row2.addStretch()
         lay.addLayout(row2)
-
-        # Load from raster button
-        row3 = QHBoxLayout()
-        btn_load = QPushButton("래스터에서 Extent 불러오기")
-        btn_load.clicked.connect(self._load_extent_from_raster)
-        row3.addWidget(btn_load)
-        row3.addStretch()
-        lay.addLayout(row3)
 
         return gb
 
@@ -239,13 +267,19 @@ class PredPreprocessTab(QWidget):
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
-    def _toggle_extent_inputs(self, checked: bool):
-        self._extent_widget.setEnabled(not checked)
-
     def _toggle_res_input(self, checked: bool):
         self._res_spin.setEnabled(not checked)
 
+    def _browse_shp_extent(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "벡터 파일 선택", "",
+            "벡터 파일 (*.shp *.gpkg *.geojson *.json);;모든 파일 (*.*)"
+        )
+        if path:
+            self._shp_extent_edit.setText(path)
+
     def _load_extent_from_raster(self):
+        """편의 버튼: 래스터를 골라 수동 입력 칸을 채우고 수동 모드로 전환."""
         path, _ = QFileDialog.getOpenFileName(
             self, "래스터 파일 선택", "",
             "래스터 (*.tif *.tiff *.img *.vrt);;모든 파일 (*.*)"
@@ -260,7 +294,7 @@ class PredPreprocessTab(QWidget):
             self._ext_maxx.setValue(b.right)
             self._ext_maxy.setValue(b.top)
             self._res_spin.setValue(info["res_x"])
-            self._chk_auto_extent.setChecked(False)
+            self._radio_ext_manual.setChecked(True)
             self._chk_auto_res.setChecked(False)
             self._log.append(f"Extent 로드: {b}")
             self._log.append(f"해상도: {info['res_x']}m")
@@ -294,16 +328,32 @@ class PredPreprocessTab(QWidget):
             return
 
         # Extent
-        if self._chk_auto_extent.isChecked():
+        if self._radio_ext_raster.isChecked():
             try:
-                from src.core.preprocessing import get_raster_info
                 info = get_raster_info(configs[0]["path"])
                 b = info["bounds"]
                 extent = (b.left, b.bottom, b.right, b.top)
             except Exception as e:
                 QMessageBox.critical(self, "오류", f"Extent 자동 감지 실패: {e}")
                 return
-        else:
+        elif self._radio_ext_shp.isChecked():
+            shp_path = self._shp_extent_edit.text().strip()
+            if not shp_path:
+                QMessageBox.warning(self, "입력 오류", "SHP 파일을 선택하세요.")
+                return
+            try:
+                import geopandas as gpd
+                gdf = gpd.read_file(shp_path)
+                b = gdf.total_bounds  # (minx, miny, maxx, maxy)
+                extent = (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
+                self._log.append(
+                    f"SHP Extent 로드: MinX={extent[0]:.4f} MinY={extent[1]:.4f} "
+                    f"MaxX={extent[2]:.4f} MaxY={extent[3]:.4f}"
+                )
+            except Exception as e:
+                QMessageBox.critical(self, "오류", f"SHP Extent 읽기 실패: {e}")
+                return
+        else:  # manual
             extent = (
                 self._ext_minx.value(),
                 self._ext_miny.value(),
