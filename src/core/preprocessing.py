@@ -66,6 +66,17 @@ def _make_buffers(gdf: gpd.GeoDataFrame, size: float, method: str) -> gpd.GeoDat
     return _make_moore_buffers(gdf, size)
 
 
+def _reproject_to_raster_crs(buf_gdf: gpd.GeoDataFrame, raster_path: str) -> gpd.GeoDataFrame:
+    """버퍼 GDF를 래스터 CRS에 맞게 재투영. CRS가 같으면 그대로 반환."""
+    with rasterio.open(raster_path) as src:
+        raster_crs = src.crs
+    if buf_gdf.crs is None:
+        return buf_gdf
+    if buf_gdf.crs == raster_crs:
+        return buf_gdf
+    return buf_gdf.to_crs(raster_crs)
+
+
 # ---------------------------------------------------------------------------
 # Zonal statistics helpers
 # ---------------------------------------------------------------------------
@@ -74,8 +85,9 @@ def _zonal_continuous(
     buf_gdf: gpd.GeoDataFrame, raster_path: str, prefix: str, nodata
 ) -> pd.DataFrame:
     """연속형 래스터 → zonal mean."""
+    aligned = _reproject_to_raster_crs(buf_gdf, raster_path)
     stats = zonal_stats(
-        list(buf_gdf.geometry),
+        list(aligned.geometry),
         raster_path,
         stats=["mean"],
         nodata=nodata,
@@ -85,11 +97,13 @@ def _zonal_continuous(
 
 
 def _zonal_categorical(
-    buf_gdf: gpd.GeoDataFrame, raster_path: str, prefix: str, nodata
+    buf_gdf: gpd.GeoDataFrame, raster_path: str, prefix: str, nodata,
+    log_cb=None,
 ) -> pd.DataFrame:
     """범주형 래스터 → 클래스별 픽셀 count."""
+    aligned = _reproject_to_raster_crs(buf_gdf, raster_path)
     stats = zonal_stats(
-        list(buf_gdf.geometry),
+        list(aligned.geometry),
         raster_path,
         categorical=True,
         nodata=nodata,
@@ -101,6 +115,13 @@ def _zonal_categorical(
         if k is not None and (nodata is None or k != nodata)
     })
     if not all_classes:
+        non_empty = sum(1 for s in stats if s)
+        if log_cb:
+            log_cb(
+                f"  [경고] '{prefix}' 범주형 결과가 비어있습니다 "
+                f"(non-empty zones: {non_empty}/{len(stats)}). "
+                f"래스터 CRS·Extent·nodata 설정을 확인하세요."
+            )
         return pd.DataFrame()
     rows = []
     for s in stats:
@@ -112,6 +133,9 @@ def _zonal_categorical(
                 col_name = f"{prefix}_cls{c}_cnt"
             row[col_name] = s.get(c, 0)
         rows.append(row)
+    if log_cb:
+        log_cb(f"    → 클래스 {len(all_classes)}종: {[int(c) if isinstance(c, (int, float)) else c for c in all_classes[:10]]}"
+               + (" ..." if len(all_classes) > 10 else ""))
     return pd.DataFrame(rows)
 
 
@@ -193,14 +217,16 @@ def preprocess_training(
             rpath = cfg["path"]
             prefix = f"{rname}_{int(buf_size)}m"
 
-            log(f"  {rname} ({'연속형' if rtype == 'continuous' else '범주형'})")
             rinfo = get_raster_info(rpath)
+            raster_crs = rinfo["crs"]
+            crs_note = "" if buf_gdf.crs == raster_crs else f" [CRS 재투영: {buf_gdf.crs} → {raster_crs}]"
+            log(f"  {rname} ({'연속형' if rtype == 'continuous' else '범주형'}){crs_note}")
 
             try:
                 if rtype == "continuous":
                     sdf = _zonal_continuous(buf_gdf, rpath, prefix, rinfo["nodata"])
                 else:
-                    sdf = _zonal_categorical(buf_gdf, rpath, prefix, rinfo["nodata"])
+                    sdf = _zonal_categorical(buf_gdf, rpath, prefix, rinfo["nodata"], log_cb=log)
 
                 for col in sdf.columns:
                     result[col] = sdf[col].values
@@ -349,14 +375,16 @@ def preprocess_prediction(
             rpath = cfg["path"]
             prefix = f"{rname}_{int(buf_size)}m"
 
-            log(f"  {rname} ({'연속형' if rtype == 'continuous' else '범주형'})")
             rinfo = get_raster_info(rpath)
+            raster_crs = rinfo["crs"]
+            crs_note = "" if buf_gdf.crs == raster_crs else f" [CRS 재투영: {buf_gdf.crs} → {raster_crs}]"
+            log(f"  {rname} ({'연속형' if rtype == 'continuous' else '범주형'}){crs_note}")
 
             try:
                 if rtype == "continuous":
                     sdf = _zonal_continuous(buf_gdf, rpath, prefix, rinfo["nodata"])
                 else:
-                    sdf = _zonal_categorical(buf_gdf, rpath, prefix, rinfo["nodata"])
+                    sdf = _zonal_categorical(buf_gdf, rpath, prefix, rinfo["nodata"], log_cb=log)
 
                 for col in sdf.columns:
                     result[col] = sdf[col].values
