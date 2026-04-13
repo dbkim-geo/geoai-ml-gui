@@ -294,7 +294,7 @@ class TrainTab(QWidget):
             "개별 거리별 모델  — 각 버퍼 거리마다 독립적인 모델을 학습하고 성능 비교"
         )
         self._radio_mgwr = QRadioButton(
-            "MGWR 컨셉  — 변수별로 타겟과 상관성이 가장 높은 거리를 자동 선택 후 단일 모델 학습"
+            "변수별 최적 거리 자동 선택  — 각 변수마다 가장 상관성 높은 거리를 선택 후 단일 모델 학습"
         )
         self._radio_per_dist.setChecked(True)
         bg = QButtonGroup(self)
@@ -303,9 +303,8 @@ class TrainTab(QWidget):
         opt_lay.addWidget(self._radio_per_dist)
         opt_lay.addWidget(self._radio_mgwr)
 
-        # MGWR score description
         mgwr_note = QLabel(
-            "   ※ MGWR 선택 기준: 회귀=Spearman 상관계수, 분류=Mutual Information"
+            "   ※ 선택 기준: 회귀=Spearman 상관계수, 분류=Mutual Information"
         )
         mgwr_note.setStyleSheet("color: gray; font-size: 10px;")
         opt_lay.addWidget(mgwr_note)
@@ -460,7 +459,7 @@ class TrainTab(QWidget):
             self._results = inner
             sel_df = results.get("_selection")
             if sel_df is not None:
-                self._log.append("\n[MGWR 변수별 최적 거리 선택 결과]")
+                self._log.append("\n[변수별 최적 거리 선택 결과]")
                 selected = sel_df[sel_df["selected"] == True]
                 for _, row in selected.iterrows():
                     self._log.append(f"  {row['variable']}: {int(row['distance_m'])}m  (score={row['score']:.4f})")

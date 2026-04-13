@@ -81,7 +81,7 @@ fid, target, slope_100m_mean, slope_200m_mean,
 5. **거리별 모델링** (선택)
    - **비활성**: 전체 버퍼 거리 통합 학습 (기본)
    - **개별 거리별 모델**: 각 버퍼 거리마다 독립적인 모델 학습 및 성능 비교
-   - **MGWR 컨셉**: 각 변수에 대해 타겟과의 상관성이 가장 높은 거리를 자동 선택 후 단일 모델 학습
+   - **변수별 최적 거리 자동 선택**: 각 변수마다 타겟과 상관성이 가장 높은 거리를 선택 후 단일 모델 학습
      - 회귀: Spearman 상관계수 기준
      - 분류: Mutual Information 기준
 6. **출력 디렉토리** 지정 → **학습 실행**
@@ -106,10 +106,10 @@ output_dir/
 │   ├── metrics_summary.csv
 │   └── charts/
 ├── 200m/ ...
-├── mgwr/                      # MGWR 모드
+├── mgwr/                            # 변수별 최적 거리 선택 모드
 │   ├── ModelName.pkl
 │   └── charts/
-├── mgwr_distance_selection.csv  # 변수별 최적 거리 선택 결과
+├── mgwr_distance_selection.csv      # 변수별 선택된 최적 거리 결과
 └── distance_comparison.png      # 거리별 성능 비교 차트
 ```
 
@@ -179,7 +179,7 @@ geoai-ml-gui/
     │   └── shap_utils.py           # SHAP 분석 (train / predict 구분)
     ├── workers/
     │   ├── preprocess_worker.py    # QThread 전처리 (학습용 / 예측용)
-    │   ├── train_worker.py         # QThread 학습 (standard / per_distance / mgwr)
+    │   ├── train_worker.py         # QThread 학습 (standard / per_distance / 변수별 최적 거리)
     │   └── predict_worker.py       # QThread 예측 + SHAP
     └── gui/
         ├── main_window.py          # 메인 윈도우 + 탭 간 신호 연결
