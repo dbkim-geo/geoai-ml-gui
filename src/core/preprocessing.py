@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import traceback
 import warnings
 from typing import Callable, Optional
 
@@ -94,12 +95,23 @@ def _zonal_categorical(
         nodata=nodata,
         all_touched=True,
     )
-    # Gather all classes across all zones
-    all_classes: list = sorted({k for s in stats for k in s.keys()})
-    rows = [
-        {f"{prefix}_cls{int(c)}_cnt": s.get(c, 0) for c in all_classes}
-        for s in stats
-    ]
+    # Gather all classes: None 키와 nodata 값 제외
+    all_classes: list = sorted({
+        k for s in stats for k in s.keys()
+        if k is not None and (nodata is None or k != nodata)
+    })
+    if not all_classes:
+        return pd.DataFrame()
+    rows = []
+    for s in stats:
+        row = {}
+        for c in all_classes:
+            try:
+                col_name = f"{prefix}_cls{int(c)}_cnt"
+            except (ValueError, TypeError):
+                col_name = f"{prefix}_cls{c}_cnt"
+            row[col_name] = s.get(c, 0)
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -195,6 +207,7 @@ def preprocess_training(
 
             except Exception as exc:
                 log(f"  [오류] {rname}: {exc}")
+                log(traceback.format_exc())
 
             step += 1
             prog(step / total * 100)
@@ -350,6 +363,7 @@ def preprocess_prediction(
 
             except Exception as exc:
                 log(f"  [오류] {rname}: {exc}")
+                log(traceback.format_exc())
 
             step += 1
             prog(step / total * 100)
