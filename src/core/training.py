@@ -625,7 +625,7 @@ def parse_distances(feature_cols: list[str]) -> dict[int, list[str]]:
     return dict(sorted(result.items()))
 
 
-def select_mgwr_features(
+def select_scale_opt_features(
     X: pd.DataFrame,
     y: pd.Series,
     feature_cols: list[str],
@@ -633,7 +633,7 @@ def select_mgwr_features(
     log_cb: Optional[Callable] = None,
 ) -> tuple[list[str], pd.DataFrame]:
     """
-    MGWR 컨셉: 각 래스터 변수에 대해 타겟과 관련성이 가장 높은 버퍼 거리 선택.
+    Scale of Effect: 각 래스터 변수에 대해 타겟과 관련성이 가장 높은 버퍼 거리 선택.
 
     선택 기준:
     - Regression : Spearman 상관계수 절댓값 평균

@@ -10,7 +10,7 @@ from src.core.shap_utils import compute_and_save_shap
 from src.core.training import (
     generate_charts,
     parse_distances,
-    select_mgwr_features,
+    select_scale_opt_features,
     train_models,
     train_per_distance,
 )
@@ -22,7 +22,7 @@ class TrainWorker(QThread):
     distance_mode:
         'none'         – 전체 거리 통합 (기존 방식)
         'per_distance' – 거리별 독립 모델
-        'mgwr'         – 변수별 최적 거리 자동 선택 후 단일 모델
+        'scale_opt'    – 변수별 최적 거리 자동 선택 후 단일 모델
     """
 
     progress = pyqtSignal(int)
@@ -41,8 +41,8 @@ class TrainWorker(QThread):
 
             if mode == "per_distance":
                 self._run_per_distance(p)
-            elif mode == "mgwr":
-                self._run_mgwr(p)
+            elif mode == "scale_opt":
+                self._run_scale_opt(p)
             else:
                 self._run_standard(p)
 
@@ -122,12 +122,12 @@ class TrainWorker(QThread):
         self.finished.emit(wrapped)
 
     # ------------------------------------------------------------------
-    # MGWR mode
+    # Scale Optimization mode
     # ------------------------------------------------------------------
-    def _run_mgwr(self, p: dict):
+    def _run_scale_opt(self, p: dict):
         import pandas as pd
 
-        self.log.emit("[MGWR 모드] 변수별 최적 거리 선택 중...")
+        self.log.emit("[Scale Optimization] 변수별 최적 거리 선택 중...")
 
         df = pd.read_csv(p["csv_path"])
         exclude = {"fid", "FID", "grid_x", "grid_y", p["target_col"]}
@@ -135,7 +135,7 @@ class TrainWorker(QThread):
         y = df[p["target_col"]].dropna()
         X_all = df[all_features].loc[y.index].fillna(df[all_features].median())
 
-        best_cols, selection_df = select_mgwr_features(
+        best_cols, selection_df = select_scale_opt_features(
             X=X_all, y=y,
             feature_cols=all_features,
             task_type=p["task_type"],
@@ -149,7 +149,7 @@ class TrainWorker(QThread):
         self.log.emit(f"\n최적 거리 선택 결과: {sel_path}")
         self.log.emit(f"선택된 변수 수: {len(best_cols)}")
 
-        mgwr_dir = os.path.join(p["output_dir"], "scale_opt")
+        scale_opt_dir = os.path.join(p["output_dir"], "scale_opt")
         results = train_models(
             csv_path=p["csv_path"],
             target_col=p["target_col"],
@@ -159,24 +159,24 @@ class TrainWorker(QThread):
             cv_folds=p["cv_folds"],
             tune=p["tune"],
             n_iter=p["n_iter"],
-            output_dir=mgwr_dir,
+            output_dir=scale_opt_dir,
             feature_cols_override=best_cols,
             progress_cb=self.progress.emit,
             log_cb=self.log.emit,
         )
 
         if results:
-            chart_dir = os.path.join(mgwr_dir, "charts")
+            chart_dir = os.path.join(scale_opt_dir, "charts")
             generate_charts(results, p["task_type"], chart_dir)
 
         if p.get("run_shap") and results:
             self._run_shap_train(
-                {**p, "output_dir": mgwr_dir},
+                {**p, "output_dir": scale_opt_dir},
                 results,
                 feature_cols_override=best_cols,
             )
 
-        wrapped = {"_mode": "mgwr", "_data": results, "_selection": selection_df}
+        wrapped = {"_mode": "scale_opt", "_data": results, "_selection": selection_df}
         self.finished.emit(wrapped)
 
     # ------------------------------------------------------------------

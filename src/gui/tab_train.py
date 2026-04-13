@@ -293,21 +293,21 @@ class TrainTab(QWidget):
         self._radio_per_dist = QRadioButton(
             "개별 거리별 모델  — 각 버퍼 거리마다 독립적인 모델을 학습하고 성능 비교"
         )
-        self._radio_mgwr = QRadioButton(
+        self._radio_scale_opt = QRadioButton(
             "변수별 최적 거리 자동 선택  — 각 변수마다 가장 상관성 높은 거리를 선택 후 단일 모델 학습"
         )
         self._radio_per_dist.setChecked(True)
         bg = QButtonGroup(self)
         bg.addButton(self._radio_per_dist)
-        bg.addButton(self._radio_mgwr)
+        bg.addButton(self._radio_scale_opt)
         opt_lay.addWidget(self._radio_per_dist)
-        opt_lay.addWidget(self._radio_mgwr)
+        opt_lay.addWidget(self._radio_scale_opt)
 
-        mgwr_note = QLabel(
+        scale_note = QLabel(
             "   ※ 선택 기준: 회귀=Spearman 상관계수, 분류=Mutual Information"
         )
-        mgwr_note.setStyleSheet("color: gray; font-size: 10px;")
-        opt_lay.addWidget(mgwr_note)
+        scale_note.setStyleSheet("color: gray; font-size: 10px;")
+        opt_lay.addWidget(scale_note)
 
         self._dist_options_widget.setEnabled(False)
         lay.addWidget(self._dist_options_widget)
@@ -454,7 +454,7 @@ class TrainTab(QWidget):
             self._load_charts_per_distance(all_dist_results)
             self.model_trained.emit(flat)
 
-        elif mode == "mgwr":
+        elif mode == "scale_opt":
             inner = results.get("_data", {})
             self._results = inner
             sel_df = results.get("_selection")
@@ -550,8 +550,8 @@ class TrainTab(QWidget):
     def _get_distance_mode(self) -> str:
         if not self._chk_dist.isChecked():
             return "none"
-        if self._radio_mgwr.isChecked():
-            return "mgwr"
+        if self._radio_scale_opt.isChecked():
+            return "scale_opt"
         return "per_distance"
 
     def _load_charts_per_distance(self, all_dist_results: dict):
