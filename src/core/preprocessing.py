@@ -17,9 +17,9 @@ import numpy as np
 import pandas as pd
 import rasterio
 from rasterstats import zonal_stats
-from pyproj import Transformer
+from pyproj import CRS as _ProjCRS, Transformer
+from scipy.ndimage import convolve as _nd_convolve
 from shapely.geometry import Point, box
-from shapely.ops import transform as shp_transform
 
 warnings.filterwarnings("ignore")
 
@@ -80,7 +80,178 @@ def _reproject_to_raster_crs(buf_gdf: gpd.GeoDataFrame, raster_path: str) -> gpd
 
 
 # ---------------------------------------------------------------------------
-# Zonal statistics helpers
+# Fast focal statistics (예측 격자용 — 래스터 한 번 읽고 convolution)
+# ---------------------------------------------------------------------------
+
+def _make_focal_kernel(buffer_size: float, res: float, method: str) -> np.ndarray:
+    """
+    버퍼 방식에 따라 focal statistics 커널 생성.
+
+    circle : x²+y² ≤ r² 인 원형 커널
+    moore  : 2r+1 × 2r+1 정사각형 커널
+    """
+    r_px = max(1, int(np.ceil(buffer_size / res)))
+    if method == "circle":
+        yy, xx = np.ogrid[-r_px : r_px + 1, -r_px : r_px + 1]
+        kernel = (xx ** 2 + yy ** 2 <= r_px ** 2).astype(np.float64)
+    else:  # moore / bbox
+        kernel = np.ones((2 * r_px + 1, 2 * r_px + 1), dtype=np.float64)
+    return kernel
+
+
+def _read_raster_window(raster_path: str, xs: np.ndarray, ys: np.ndarray,
+                         src_crs, buffer_size: float):
+    """
+    예측 격자 범위 + 버퍼 패딩만큼의 래스터 윈도우를 읽는다.
+    (xs, ys 는 src_crs 좌표계)
+
+    Returns
+    -------
+    data        : 2D ndarray (float64)
+    win_tf      : 윈도우 affine transform
+    res         : 래스터 해상도
+    nodata      : 래스터 nodata 값
+    qx, qy      : 래스터 CRS로 변환된 쿼리 좌표
+    """
+    import rasterio.windows
+
+    with rasterio.open(raster_path) as src:
+        raster_crs = src.crs
+        res = src.res[0]
+
+        # 좌표 CRS 변환
+        sc = _ProjCRS.from_user_input(src_crs)
+        rc = _ProjCRS.from_user_input(raster_crs)
+        if sc != rc:
+            tr = Transformer.from_crs(sc, rc, always_xy=True)
+            qx, qy = np.array(tr.transform(xs, ys))
+        else:
+            qx, qy = np.asarray(xs, float), np.asarray(ys, float)
+
+        # extent + 패딩만큼 윈도우 잘라 읽기
+        pad = buffer_size + res * 2
+        win = rasterio.windows.from_bounds(
+            qx.min() - pad, qy.min() - pad,
+            qx.max() + pad, qy.max() + pad,
+            transform=src.transform,
+        )
+        # 래스터 전체 범위로 클리핑
+        win = win.intersection(
+            rasterio.windows.Window(0, 0, src.width, src.height)
+        )
+        data = src.read(1, window=win).astype(np.float64)
+        win_tf = src.window_transform(win)
+        nodata = src.nodata
+
+    return data, win_tf, res, nodata, qx, qy
+
+
+def _focal_continuous(
+    raster_path: str,
+    xs: np.ndarray, ys: np.ndarray,
+    src_crs,
+    buffer_size: float,
+    method: str,
+    log_cb=None,
+) -> np.ndarray:
+    """
+    연속형 래스터: focal mean(원형 or bbox 커널) → 격자 좌표에서 샘플링.
+
+    rasterstats 방식 대비 수십 배 빠름.
+    """
+    data, win_tf, res, nodata, qx, qy = _read_raster_window(
+        raster_path, xs, ys, src_crs, buffer_size
+    )
+
+    # nodata 마스킹
+    if nodata is not None:
+        data[data == nodata] = np.nan
+
+    kernel = _make_focal_kernel(buffer_size, res, method)
+
+    # NaN-aware focal mean: sum(values) / sum(valid_pixels)
+    valid = (~np.isnan(data)).astype(np.float64)
+    filled = np.where(np.isnan(data), 0.0, data)
+    sum_v = _nd_convolve(filled, kernel, mode="constant", cval=0.0)
+    sum_n = _nd_convolve(valid,  kernel, mode="constant", cval=0.0)
+    focal = np.where(sum_n > 0, sum_v / sum_n, np.nan)
+
+    # 격자 위치에서 샘플링
+    rows, cols = rasterio.transform.rowcol(win_tf, qx, qy)
+    rows, cols = np.asarray(rows), np.asarray(cols)
+    h, w = data.shape
+    inside = (rows >= 0) & (rows < h) & (cols >= 0) & (cols < w)
+
+    out = np.full(len(xs), np.nan, dtype=np.float64)
+    out[inside] = focal[rows[inside], cols[inside]]
+
+    if log_cb:
+        valid_n = int(np.sum(~np.isnan(out)))
+        log_cb(f"    → 유효 결과: {valid_n}/{len(xs)}개")
+        if valid_n == 0:
+            log_cb("    [경고] 모든 결과가 NaN. 래스터 Extent·nodata 확인 요망.")
+    return out
+
+
+def _focal_categorical(
+    raster_path: str,
+    xs: np.ndarray, ys: np.ndarray,
+    src_crs,
+    buffer_size: float,
+    method: str,
+    log_cb=None,
+) -> dict:
+    """
+    범주형 래스터: 클래스별 focal count(원형 or bbox 커널) → 격자 좌표에서 샘플링.
+
+    Returns
+    -------
+    dict[int, np.ndarray]  — {class_value: count_array}
+    """
+    data, win_tf, res, nodata, qx, qy = _read_raster_window(
+        raster_path, xs, ys, src_crs, buffer_size
+    )
+
+    # valid 마스크 (nodata 제외)
+    if nodata is not None:
+        try:
+            nd_val = data.dtype.type(nodata)
+            valid_mask = data != nd_val
+        except Exception:
+            valid_mask = np.ones(data.shape, dtype=bool)
+    else:
+        valid_mask = np.ones(data.shape, dtype=bool)
+
+    classes = sorted(np.unique(data[valid_mask]).tolist())
+    if not classes:
+        if log_cb:
+            log_cb("    [경고] 유효 픽셀이 없습니다. CRS·Extent·nodata 확인 요망.")
+        return {}
+    if log_cb:
+        log_cb(
+            f"    → 클래스 {len(classes)}종: {[int(c) for c in classes[:10]]}"
+            + (" ..." if len(classes) > 10 else "")
+        )
+
+    kernel = _make_focal_kernel(buffer_size, res, method)
+
+    rows, cols = rasterio.transform.rowcol(win_tf, qx, qy)
+    rows, cols = np.asarray(rows), np.asarray(cols)
+    h, w = data.shape
+    inside = (rows >= 0) & (rows < h) & (cols >= 0) & (cols < w)
+
+    result = {}
+    for cls in classes:
+        binary = ((data == cls) & valid_mask).astype(np.float64)
+        count_map = _nd_convolve(binary, kernel, mode="constant", cval=0.0)
+        counts = np.zeros(len(xs), dtype=np.int32)
+        counts[inside] = count_map[rows[inside], cols[inside]].astype(np.int32)
+        result[int(cls)] = counts
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Zonal statistics helpers (학습 데이터용 — 불규칙 포인트)
 # ---------------------------------------------------------------------------
 
 def _zonal_continuous(
@@ -394,17 +565,15 @@ def preprocess_prediction(
     gx, gy = np.meshgrid(xs, ys)
     gx, gy = gx.flatten(), gy.flatten()
 
-    points = [Point(x, y) for x, y in zip(gx, gy)]
-    point_gdf = gpd.GeoDataFrame(geometry=points, crs=ref_crs)
-
     result = pd.DataFrame({"grid_x": gx, "grid_y": gy})
 
     total = len(buffer_sizes) * len(raster_configs)
     step = 0
 
+    log(f"[빠른 Focal Statistics 모드: 래스터 1회 읽기 + {'원형' if buffer_method == 'circle' else '격자'} 커널 convolution]")
+
     for buf_size in buffer_sizes:
         log(f"\n--- 버퍼 {buf_size}m ({buffer_method}) ---")
-        buf_gdf = _make_buffers(point_gdf, buf_size, buffer_method)
 
         for cfg in raster_configs:
             rname = cfg["name"]
@@ -413,18 +582,26 @@ def preprocess_prediction(
             prefix = f"{rname}_{int(buf_size)}m"
 
             rinfo = get_raster_info(rpath)
-            raster_crs = rinfo["crs"]
-            crs_note = "" if buf_gdf.crs == raster_crs else f" [CRS 재투영: {buf_gdf.crs} → {raster_crs}]"
+            raster_crs_epsg = rinfo["crs"].to_epsg()
+            grid_crs_epsg = ref_crs.to_epsg() if hasattr(ref_crs, "to_epsg") else None
+            crs_note = (
+                "" if raster_crs_epsg == grid_crs_epsg
+                else f" [CRS 변환 → EPSG:{raster_crs_epsg}]"
+            )
             log(f"  {rname} ({'연속형' if rtype == 'continuous' else '범주형'}){crs_note}")
 
             try:
                 if rtype == "continuous":
-                    sdf = _zonal_continuous(buf_gdf, rpath, prefix, rinfo["nodata"], log_cb=log)
+                    means = _focal_continuous(
+                        rpath, gx, gy, ref_crs, buf_size, buffer_method, log_cb=log
+                    )
+                    result[f"{prefix}_mean"] = means
                 else:
-                    sdf = _zonal_categorical(buf_gdf, rpath, prefix, rinfo["nodata"], log_cb=log)
-
-                for col in sdf.columns:
-                    result[col] = sdf[col].values
+                    cls_counts = _focal_categorical(
+                        rpath, gx, gy, ref_crs, buf_size, buffer_method, log_cb=log
+                    )
+                    for cls, counts in cls_counts.items():
+                        result[f"{prefix}_cls{cls}_cnt"] = counts
 
             except Exception as exc:
                 log(f"  [오류] {rname}: {exc}")
