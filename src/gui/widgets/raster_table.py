@@ -1,18 +1,18 @@
 """
 래스터 파일 목록 테이블 위젯.
-각 행: 파일경로 | 이름 | 유형(연속형/범주형)
+각 행: 파일경로 | 이름 | 유형(연속형/범주형) | CRS
 """
 from __future__ import annotations
 
 import os
 
+import rasterio
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QComboBox,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
-    QLineEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -29,7 +29,7 @@ class RasterTableWidget(QWidget):
     TYPE_CONTINUOUS = "연속형 (Continuous)"
     TYPE_CATEGORICAL = "범주형 (Categorical)"
 
-    COLUMNS = ["파일 경로", "이름", "유형"]
+    COLUMNS = ["파일 경로", "이름", "유형", "CRS"]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -56,6 +56,7 @@ class RasterTableWidget(QWidget):
         hdr.setSectionResizeMode(0, QHeaderView.Stretch)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
         self._table.setEditTriggers(QTableWidget.DoubleClicked)
         self._table.verticalHeader().setVisible(False)
@@ -81,6 +82,19 @@ class RasterTableWidget(QWidget):
         for row in rows:
             self._table.removeRow(row)
 
+    @staticmethod
+    def _read_crs(path: str) -> str:
+        """래스터 CRS를 EPSG 코드(또는 WKT 축약) 문자열로 반환."""
+        try:
+            with rasterio.open(path) as src:
+                crs = src.crs
+                if crs is None:
+                    return "CRS 없음"
+                epsg = crs.to_epsg()
+                return f"EPSG:{epsg}" if epsg else crs.to_string()[:30]
+        except Exception:
+            return "읽기 실패"
+
     def _add_row(self, path: str):
         row = self._table.rowCount()
         self._table.insertRow(row)
@@ -99,6 +113,13 @@ class RasterTableWidget(QWidget):
         combo = QComboBox()
         combo.addItems([self.TYPE_CONTINUOUS, self.TYPE_CATEGORICAL])
         self._table.setCellWidget(row, 2, combo)
+
+        # CRS (read-only)
+        crs_str = self._read_crs(path)
+        crs_item = QTableWidgetItem(crs_str)
+        crs_item.setFlags(crs_item.flags() & ~Qt.ItemIsEditable)
+        crs_item.setTextAlignment(Qt.AlignCenter)
+        self._table.setItem(row, 3, crs_item)
 
     # ------------------------------------------------------------------
     def get_configs(self) -> list[dict]:
@@ -128,10 +149,8 @@ class RasterTableWidget(QWidget):
         for cfg in configs:
             self._add_row(cfg.get("path", ""))
             row = self._table.rowCount() - 1
-            # Set name
             if "name" in cfg:
                 self._table.item(row, 1).setText(cfg["name"])
-            # Set type
             combo: QComboBox = self._table.cellWidget(row, 2)
             if cfg.get("type") == "categorical":
                 combo.setCurrentText(self.TYPE_CATEGORICAL)

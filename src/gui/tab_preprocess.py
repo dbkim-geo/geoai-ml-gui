@@ -103,6 +103,9 @@ class PreprocessTab(QWidget):
         btn_pt = QPushButton("찾기")
         btn_pt.clicked.connect(self._browse_point)
         row1.addWidget(btn_pt)
+        self._point_crs_label = QLabel("")
+        self._point_crs_label.setStyleSheet("color: #1565C0; font-weight: bold;")
+        row1.addWidget(self._point_crs_label)
         lay.addLayout(row1)
 
         # Target column + task type
@@ -249,17 +252,25 @@ class PreprocessTab(QWidget):
             self._load_point_columns(path)
 
     def _load_point_columns(self, path: str):
-        """포인트 파일을 읽어 컬럼 목록을 드롭다운에 채운다."""
+        """포인트 파일을 읽어 컬럼 목록과 CRS를 로드한다."""
         try:
             gdf = gpd.read_file(path, rows=1)
+            # CRS 표시
+            crs = gdf.crs
+            if crs is not None:
+                epsg = crs.to_epsg()
+                crs_str = f"EPSG:{epsg}" if epsg else crs.to_string()[:30]
+            else:
+                crs_str = "CRS 없음"
+            self._point_crs_label.setText(f"[{crs_str}]")
+
             cols = [c for c in gdf.columns if c != "geometry"]
             prev = self._target_combo.currentText()
             self._target_combo.clear()
             self._target_combo.addItems(cols)
-            # 이전 선택값 복원
             if prev in cols:
                 self._target_combo.setCurrentText(prev)
-            self._log.append(f"컬럼 로드 완료: {cols}")
+            self._log.append(f"컬럼 로드 완료: {cols}  |  CRS: {crs_str}")
         except Exception as e:
             self._log.append(f"[경고] 컬럼 읽기 실패: {e}")
 
