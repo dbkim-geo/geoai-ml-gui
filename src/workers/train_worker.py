@@ -139,6 +139,7 @@ class TrainWorker(QThread):
             X=X_all, y=y,
             feature_cols=all_features,
             task_type=p["task_type"],
+            method=p.get("scale_method", "corr"),
             log_cb=self.log.emit,
         )
 

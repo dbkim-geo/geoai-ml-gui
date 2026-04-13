@@ -12,6 +12,7 @@ from typing import Callable, Optional
 import joblib
 import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as _fm
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import (
@@ -44,6 +45,27 @@ from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 matplotlib.use("Agg")
 warnings.filterwarnings("ignore")
+
+
+def _setup_korean_font():
+    """OS별 한글 폰트를 찾아 matplotlib에 설정."""
+    import platform
+    candidates = {
+        "Windows": ["Malgun Gothic", "맑은 고딕"],
+        "Darwin":  ["AppleGothic", "NanumGothic"],
+        "Linux":   ["NanumGothic", "NanumBarunGothic", "UnDotum"],
+    }.get(platform.system(), ["NanumGothic"])
+
+    available = {f.name for f in _fm.fontManager.ttflist}
+    for name in candidates:
+        if name in available:
+            plt.rcParams["font.family"] = name
+            plt.rcParams["axes.unicode_minus"] = False
+            return
+    plt.rcParams["axes.unicode_minus"] = False   # 최소한 마이너스 부호만 고정
+
+
+_setup_korean_font()
 
 # Optional libraries
 try:
@@ -630,28 +652,31 @@ def select_scale_opt_features(
     y: pd.Series,
     feature_cols: list[str],
     task_type: str = "regression",
+    method: str = "corr",          # "corr" | "model"
     log_cb: Optional[Callable] = None,
 ) -> tuple[list[str], pd.DataFrame]:
     """
     Scale of Effect: 각 래스터 변수에 대해 타겟과 관련성이 가장 높은 버퍼 거리 선택.
 
-    선택 기준:
-    - Regression : Spearman 상관계수 절댓값 평균
-    - Classification : Mutual Information 평균
+    Parameters
+    ----------
+    method : str
+        "corr"  – 단변량 상관계수 (회귀: Spearman, 분류: Mutual Information).
+                  빠르지만 변수 간 상호작용을 고려하지 않음.
+        "model" – Random Forest Feature Importance 기반.
+                  변수 간 상호작용을 반영하며 더 정확하나 시간이 걸림.
 
     Returns
     -------
     (best_cols, selection_df)
         best_cols      – 선택된 컬럼 목록
-        selection_df   – {variable, distance_m, score, selected} 데이터프레임
+        selection_df   – {variable, distance_m, score, selected, method} DataFrame
     """
-    from scipy.stats import spearmanr
-
     def log(msg: str):
         if log_cb:
             log_cb(msg)
 
-    # Group by variable name  →  {var_name: {distance: [cols]}}
+    # Group columns by variable name → {var_name: {distance: [cols]}}
     var_groups: dict[str, dict[int, list[str]]] = {}
     for col in feature_cols:
         m = _re.match(r"^(.+?)_(\d+)m_", col)
@@ -659,6 +684,15 @@ def select_scale_opt_features(
             vname, dist = m.group(1), int(m.group(2))
             var_groups.setdefault(vname, {}).setdefault(dist, []).append(col)
 
+    # ── Score computation ──────────────────────────────────────────────
+    if method == "model":
+        log("  [Scale Opt] 방법: Random Forest Feature Importance")
+        score_map = _score_by_model(X, y, feature_cols, task_type, log)
+    else:
+        log("  [Scale Opt] 방법: 상관계수 (Spearman / Mutual Information)")
+        score_map = _score_by_corr(X, y, feature_cols, task_type)
+
+    # ── Select best distance per variable ─────────────────────────────
     best_cols: list[str] = []
     records: list[dict] = []
 
@@ -666,40 +700,72 @@ def select_scale_opt_features(
         best_dist, best_score = None, -np.inf
 
         for dist, cols in sorted(dist_map.items()):
-            scores = []
-            for col in cols:
-                if col not in X.columns:
-                    continue
-                xc = X[col].fillna(0)
-                try:
-                    if task_type == "regression":
-                        r, _ = spearmanr(xc, y, nan_policy="omit")
-                        scores.append(abs(float(r)) if not np.isnan(r) else 0.0)
-                    else:
-                        from sklearn.feature_selection import mutual_info_classif
-                        mi = mutual_info_classif(
-                            xc.values.reshape(-1, 1), y.values, random_state=42
-                        )[0]
-                        scores.append(float(mi))
-                except Exception:
-                    scores.append(0.0)
-
-            score = float(np.mean(scores)) if scores else 0.0
-            records.append({"variable": vname, "distance_m": dist, "score": score, "selected": False})
-
+            score = float(np.mean([score_map.get(c, 0.0) for c in cols]))
+            records.append({
+                "variable": vname, "distance_m": dist,
+                "score": score, "selected": False, "method": method,
+            })
             if score > best_score:
                 best_score, best_dist = score, dist
 
         if best_dist is not None:
             best_cols.extend(dist_map[best_dist])
             log(f"  {vname}: 최적 거리 = {best_dist}m  (score={best_score:.4f})")
-            # Mark selected row
             for rec in records:
                 if rec["variable"] == vname and rec["distance_m"] == best_dist:
                     rec["selected"] = True
 
     selection_df = pd.DataFrame(records)
     return best_cols, selection_df
+
+
+def _score_by_corr(
+    X: pd.DataFrame, y: pd.Series,
+    feature_cols: list[str], task_type: str,
+) -> dict[str, float]:
+    """단변량 상관계수로 각 컬럼의 score 계산."""
+    from scipy.stats import spearmanr
+
+    scores = {}
+    for col in feature_cols:
+        if col not in X.columns:
+            scores[col] = 0.0
+            continue
+        xc = X[col].fillna(0)
+        try:
+            if task_type == "regression":
+                r, _ = spearmanr(xc, y, nan_policy="omit")
+                scores[col] = abs(float(r)) if not np.isnan(r) else 0.0
+            else:
+                from sklearn.feature_selection import mutual_info_classif
+                mi = mutual_info_classif(
+                    xc.values.reshape(-1, 1), y.values, random_state=42
+                )[0]
+                scores[col] = float(mi)
+        except Exception:
+            scores[col] = 0.0
+    return scores
+
+
+def _score_by_model(
+    X: pd.DataFrame, y: pd.Series,
+    feature_cols: list[str], task_type: str,
+    log_fn,
+) -> dict[str, float]:
+    """Random Forest Feature Importance로 각 컬럼의 score 계산."""
+    from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+
+    X_filled = X[feature_cols].fillna(X[feature_cols].median())
+    log_fn("  RF 학습 중 (n_estimators=100)...")
+
+    if task_type == "regression":
+        rf = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+    else:
+        rf = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+
+    rf.fit(X_filled, y)
+    fi = rf.feature_importances_
+    return dict(zip(feature_cols, fi.tolist()))
 
 
 def train_per_distance(

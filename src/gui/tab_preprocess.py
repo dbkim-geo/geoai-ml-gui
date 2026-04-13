@@ -199,15 +199,31 @@ class PreprocessTab(QWidget):
         gb = QGroupBox("출력")
         lay = QVBoxLayout(gb)
 
-        row = QHBoxLayout()
-        row.addWidget(QLabel("출력 CSV:"))
+        # CSV
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("출력 CSV:"))
         self._output_edit = QLineEdit()
         self._output_edit.setPlaceholderText("train_data.csv")
-        row.addWidget(self._output_edit)
-        btn_out = QPushButton("찾기")
-        btn_out.clicked.connect(self._browse_output)
-        row.addWidget(btn_out)
-        lay.addLayout(row)
+        row1.addWidget(self._output_edit)
+        btn_csv = QPushButton("찾기")
+        btn_csv.clicked.connect(self._browse_output)
+        row1.addWidget(btn_csv)
+        lay.addLayout(row1)
+
+        # Vector (SHP / GPKG)
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("벡터 저장 (선택):"))
+        self._vector_edit = QLineEdit()
+        self._vector_edit.setPlaceholderText("train_points.gpkg  (SHP 또는 GPKG, 비워두면 생략)")
+        row2.addWidget(self._vector_edit)
+        btn_vec = QPushButton("찾기")
+        btn_vec.clicked.connect(self._browse_vector)
+        row2.addWidget(btn_vec)
+        lay.addLayout(row2)
+
+        note = QLabel("※ SHP 저장 시 필드명이 10자로 잘립니다. GPKG 권장.")
+        note.setStyleSheet("color: gray; font-size: 10px;")
+        lay.addWidget(note)
 
         btn_row = QHBoxLayout()
         self._btn_run = QPushButton("▶  전처리 실행")
@@ -256,6 +272,14 @@ class PreprocessTab(QWidget):
                 path += ".csv"
             self._output_edit.setText(path)
 
+    def _browse_vector(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "벡터 파일 저장", "",
+            "GeoPackage (*.gpkg);;Shapefile (*.shp)"
+        )
+        if path:
+            self._vector_edit.setText(path)
+
     def _update_buf_preview(self):
         sizes = self._get_buffer_sizes()
         self._buf_preview.setText(f"  → 버퍼 크기 목록: {sizes} m")
@@ -287,6 +311,7 @@ class PreprocessTab(QWidget):
             "buffer_method": "circle" if self._radio_circle.isChecked() else "moore",
             "target_col": self._target_combo.currentText().strip(),
             "output_csv": self._output_edit.text().strip(),
+            "output_vector": self._vector_edit.text().strip() or None,
         }
 
         self._log.clear()

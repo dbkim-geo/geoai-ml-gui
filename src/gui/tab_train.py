@@ -280,6 +280,14 @@ class TrainTab(QWidget):
         gb = QGroupBox("거리별 모델링 (선택)")
         lay = QVBoxLayout(gb)
 
+        # 비활성 시 안내
+        default_note = QLabel(
+            "※ 비활성 시: 모든 거리의 변수를 동시에 학습"
+            "  →  Feature Importance에서 동일 변수가 여러 거리로 나타나는 것은 정상입니다."
+        )
+        default_note.setStyleSheet("color: gray; font-size: 10px;")
+        lay.addWidget(default_note)
+
         # Enable checkbox
         self._chk_dist = QCheckBox("거리별 모델링 활성화")
         self._chk_dist.toggled.connect(self._toggle_dist_options)
@@ -297,17 +305,29 @@ class TrainTab(QWidget):
             "변수별 최적 거리 자동 선택  — 각 변수마다 가장 상관성 높은 거리를 선택 후 단일 모델 학습"
         )
         self._radio_per_dist.setChecked(True)
+        self._radio_scale_opt.toggled.connect(self._toggle_scale_method)
         bg = QButtonGroup(self)
         bg.addButton(self._radio_per_dist)
         bg.addButton(self._radio_scale_opt)
         opt_lay.addWidget(self._radio_per_dist)
         opt_lay.addWidget(self._radio_scale_opt)
 
-        scale_note = QLabel(
-            "   ※ 선택 기준: 회귀=Spearman 상관계수, 분류=Mutual Information"
-        )
-        scale_note.setStyleSheet("color: gray; font-size: 10px;")
-        opt_lay.addWidget(scale_note)
+        # Scale Opt 선택 기준 (radio_scale_opt 선택 시만 활성)
+        self._scale_method_widget = QWidget()
+        sm_lay = QHBoxLayout(self._scale_method_widget)
+        sm_lay.setContentsMargins(30, 0, 0, 0)
+        sm_lay.addWidget(QLabel("선택 기준:"))
+        self._radio_corr = QRadioButton("상관계수  (빠름 — Spearman / Mutual Information)")
+        self._radio_model_fi = QRadioButton("모델 기반  (정확 — Random Forest Feature Importance)")
+        self._radio_corr.setChecked(True)
+        bg2 = QButtonGroup(self)
+        bg2.addButton(self._radio_corr)
+        bg2.addButton(self._radio_model_fi)
+        sm_lay.addWidget(self._radio_corr)
+        sm_lay.addWidget(self._radio_model_fi)
+        sm_lay.addStretch()
+        self._scale_method_widget.setEnabled(False)
+        opt_lay.addWidget(self._scale_method_widget)
 
         self._dist_options_widget.setEnabled(False)
         lay.addWidget(self._dist_options_widget)
@@ -316,6 +336,11 @@ class TrainTab(QWidget):
 
     def _toggle_dist_options(self, checked: bool):
         self._dist_options_widget.setEnabled(checked)
+        if not checked:
+            self._scale_method_widget.setEnabled(False)
+
+    def _toggle_scale_method(self, checked: bool):
+        self._scale_method_widget.setEnabled(checked)
 
     # --- Output group ---
     def _build_output_group(self) -> QGroupBox:
@@ -411,6 +436,7 @@ class TrainTab(QWidget):
             "output_dir": out_dir,
             "run_shap": self._chk_shap.isChecked(),
             "distance_mode": self._get_distance_mode(),
+            "scale_method": "model" if self._radio_model_fi.isChecked() else "corr",
         }
 
         self._log.clear()

@@ -10,11 +10,29 @@ import os
 from typing import Callable, Optional
 
 import matplotlib
+import matplotlib.font_manager as _fm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 matplotlib.use("Agg")
+
+# 한글 폰트 설정
+def _setup_korean_font():
+    import platform
+    candidates = {
+        "Windows": ["Malgun Gothic", "맑은 고딕"],
+        "Darwin":  ["AppleGothic", "NanumGothic"],
+        "Linux":   ["NanumGothic", "NanumBarunGothic", "UnDotum"],
+    }.get(platform.system(), ["NanumGothic"])
+    available = {f.name for f in _fm.fontManager.ttflist}
+    for name in candidates:
+        if name in available:
+            plt.rcParams["font.family"] = name
+            break
+    plt.rcParams["axes.unicode_minus"] = False
+
+_setup_korean_font()
 
 try:
     import shap

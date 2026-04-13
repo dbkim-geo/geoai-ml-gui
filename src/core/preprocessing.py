@@ -114,6 +114,7 @@ def preprocess_training(
     buffer_method: str,
     target_col: str,
     output_csv: str,
+    output_vector: Optional[str] = None,   # SHP / GPKG 경로 (None이면 생략)
     progress_cb: Optional[Callable] = None,
     log_cb: Optional[Callable] = None,
 ) -> pd.DataFrame:
@@ -200,10 +201,65 @@ def preprocess_training(
 
     os.makedirs(os.path.dirname(os.path.abspath(output_csv)), exist_ok=True)
     result.to_csv(output_csv, index=False, encoding="utf-8-sig")
-
-    log(f"\n✓ 저장 완료: {output_csv}")
+    log(f"\n✓ CSV 저장: {output_csv}")
     log(f"   {len(result)}행 × {len(result.columns)}열")
+
+    # 벡터 파일 저장 (SHP / GPKG)
+    if output_vector:
+        _save_result_as_vector(gdf, result, output_vector, log)
+
     return result
+
+
+def _save_result_as_vector(
+    point_gdf: gpd.GeoDataFrame,
+    result_df: pd.DataFrame,
+    output_vector: str,
+    log_fn,
+):
+    """전처리 결과를 포인트 지오메트리와 결합해 벡터 파일로 저장."""
+    ext = os.path.splitext(output_vector)[1].lower()
+    driver = "GPKG" if ext == ".gpkg" else "ESRI Shapefile"
+
+    # 결과 컬럼을 GeoDataFrame에 붙이기
+    out_gdf = point_gdf[["geometry"]].copy().reset_index(drop=True)
+    for col in result_df.columns:
+        out_gdf[col] = result_df[col].values
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_vector)), exist_ok=True)
+
+    if driver == "ESRI Shapefile":
+        # Shapefile 필드명 10자 제한 → 자동 단축 후 매핑 저장
+        rename_map = {}
+        used = set()
+        new_cols = {}
+        for col in out_gdf.columns:
+            if col == "geometry":
+                continue
+            short = col[:10]
+            idx = 1
+            while short in used:
+                suffix = str(idx)
+                short = col[: 10 - len(suffix)] + suffix
+                idx += 1
+            used.add(short)
+            rename_map[col] = short
+            new_cols[short] = col
+
+        out_gdf = out_gdf.rename(columns=rename_map)
+
+        # 매핑 CSV 저장
+        map_path = output_vector.replace(".shp", "_field_map.csv")
+        pd.DataFrame(
+            [{"short": k, "original": v} for k, v in new_cols.items()]
+        ).to_csv(map_path, index=False, encoding="utf-8-sig")
+        log_fn(f"   필드명 매핑: {map_path}")
+
+    try:
+        out_gdf.to_file(output_vector, driver=driver, encoding="utf-8")
+        log_fn(f"✓ 벡터 저장: {output_vector}")
+    except Exception as exc:
+        log_fn(f"[경고] 벡터 저장 실패: {exc}")
 
 
 # ---------------------------------------------------------------------------

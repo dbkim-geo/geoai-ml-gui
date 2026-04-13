@@ -30,6 +30,7 @@ class TrainPreprocessWorker(QThread):
                 buffer_method=p["buffer_method"],
                 target_col=p["target_col"],
                 output_csv=p["output_csv"],
+                output_vector=p.get("output_vector"),
                 progress_cb=self.progress.emit,
                 log_cb=self.log.emit,
             )
