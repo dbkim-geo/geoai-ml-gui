@@ -316,6 +316,7 @@ def train_models(
     tune: bool = True,
     n_iter: int = 10,
     output_dir: Optional[str] = None,
+    feature_cols_override: Optional[list[str]] = None,
     progress_cb: Optional[Callable] = None,
     log_cb: Optional[Callable] = None,
 ) -> dict:
@@ -338,16 +339,41 @@ def train_models(
     df = pd.read_csv(csv_path)
 
     exclude = {"fid", "FID", "grid_x", "grid_y", target_col}
-    feature_cols = [c for c in df.columns if c not in exclude]
+    if feature_cols_override is not None:
+        feature_cols = [c for c in feature_cols_override if c in df.columns]
+    else:
+        feature_cols = [c for c in df.columns if c not in exclude]
     log(f"특성 변수: {len(feature_cols)}개  |  종속변수: '{target_col}'")
+
+    if target_col not in df.columns:
+        raise ValueError(f"종속변수 컬럼 '{target_col}'을 CSV에서 찾을 수 없습니다.\n"
+                         f"사용 가능한 컬럼: {list(df.columns)}")
 
     X = df[feature_cols].copy()
     y = df[target_col].copy()
 
-    # Drop NaN rows
-    valid = ~(X.isna().any(axis=1) | y.isna())
-    X, y = X[valid], y[valid]
-    log(f"유효 샘플: {len(X)}개 (NaN 제거 후)")
+    # ① 종속변수 NaN 행만 제거 (필수)
+    y_valid = ~y.isna()
+    X, y = X[y_valid], y[y_valid]
+
+    # ② 독립변수 NaN → 컬럼 중앙값으로 대체 (데이터 최대 보존)
+    col_medians = X.median(numeric_only=True)
+    X = X.fillna(col_medians)
+
+    # ③ 중앙값도 NaN인 컬럼(전체 결측) 제거
+    all_nan_cols = [c for c in X.columns if X[c].isna().all()]
+    if all_nan_cols:
+        log(f"[경고] 전체 결측 컬럼 제거: {all_nan_cols}")
+        X = X.drop(columns=all_nan_cols)
+        feature_cols = list(X.columns)
+
+    if len(X) < 5:
+        raise ValueError(
+            f"유효 샘플이 너무 적습니다 ({len(X)}개).\n"
+            "포인트 데이터와 래스터의 공간 범위가 겹치는지, "
+            "종속변수 컬럼이 올바른지 확인하세요."
+        )
+    log(f"유효 샘플: {len(X)}개")
 
     # Encode labels for classification
     le: Optional[LabelEncoder] = None
@@ -573,3 +599,234 @@ def generate_charts(results: dict, task_type: str, output_dir: str) -> list[str]
         saved.append(p)
 
     return saved
+
+
+# ---------------------------------------------------------------------------
+# Distance-based modeling utilities
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+
+def parse_distances(feature_cols: list[str]) -> dict[int, list[str]]:
+    """
+    컬럼명 패턴 `{name}_{distance}m_...` 에서 거리를 파싱.
+
+    Returns
+    -------
+    dict[int, list[str]] : {거리(m): [해당 거리 컬럼 목록]}  (오름차순 정렬)
+    """
+    result: dict[int, list[str]] = {}
+    for col in feature_cols:
+        m = _re.search(r"_(\d+)m_", col)
+        if m:
+            d = int(m.group(1))
+            result.setdefault(d, []).append(col)
+    return dict(sorted(result.items()))
+
+
+def select_mgwr_features(
+    X: pd.DataFrame,
+    y: pd.Series,
+    feature_cols: list[str],
+    task_type: str = "regression",
+    log_cb: Optional[Callable] = None,
+) -> tuple[list[str], pd.DataFrame]:
+    """
+    MGWR 컨셉: 각 래스터 변수에 대해 타겟과 관련성이 가장 높은 버퍼 거리 선택.
+
+    선택 기준:
+    - Regression : Spearman 상관계수 절댓값 평균
+    - Classification : Mutual Information 평균
+
+    Returns
+    -------
+    (best_cols, selection_df)
+        best_cols      – 선택된 컬럼 목록
+        selection_df   – {variable, distance_m, score, selected} 데이터프레임
+    """
+    from scipy.stats import spearmanr
+
+    def log(msg: str):
+        if log_cb:
+            log_cb(msg)
+
+    # Group by variable name  →  {var_name: {distance: [cols]}}
+    var_groups: dict[str, dict[int, list[str]]] = {}
+    for col in feature_cols:
+        m = _re.match(r"^(.+?)_(\d+)m_", col)
+        if m:
+            vname, dist = m.group(1), int(m.group(2))
+            var_groups.setdefault(vname, {}).setdefault(dist, []).append(col)
+
+    best_cols: list[str] = []
+    records: list[dict] = []
+
+    for vname, dist_map in var_groups.items():
+        best_dist, best_score = None, -np.inf
+
+        for dist, cols in sorted(dist_map.items()):
+            scores = []
+            for col in cols:
+                if col not in X.columns:
+                    continue
+                xc = X[col].fillna(0)
+                try:
+                    if task_type == "regression":
+                        r, _ = spearmanr(xc, y, nan_policy="omit")
+                        scores.append(abs(float(r)) if not np.isnan(r) else 0.0)
+                    else:
+                        from sklearn.feature_selection import mutual_info_classif
+                        mi = mutual_info_classif(
+                            xc.values.reshape(-1, 1), y.values, random_state=42
+                        )[0]
+                        scores.append(float(mi))
+                except Exception:
+                    scores.append(0.0)
+
+            score = float(np.mean(scores)) if scores else 0.0
+            records.append({"variable": vname, "distance_m": dist, "score": score, "selected": False})
+
+            if score > best_score:
+                best_score, best_dist = score, dist
+
+        if best_dist is not None:
+            best_cols.extend(dist_map[best_dist])
+            log(f"  {vname}: 최적 거리 = {best_dist}m  (score={best_score:.4f})")
+            # Mark selected row
+            for rec in records:
+                if rec["variable"] == vname and rec["distance_m"] == best_dist:
+                    rec["selected"] = True
+
+    selection_df = pd.DataFrame(records)
+    return best_cols, selection_df
+
+
+def train_per_distance(
+    csv_path: str,
+    target_col: str,
+    selected_models: list[str],
+    task_type: str = "regression",
+    test_size: float = 0.2,
+    cv_folds: int = 5,
+    tune: bool = True,
+    n_iter: int = 10,
+    output_dir: Optional[str] = None,
+    progress_cb: Optional[Callable] = None,
+    log_cb: Optional[Callable] = None,
+) -> dict[int, dict]:
+    """
+    버퍼 거리별 독립 모델 학습.
+
+    Returns
+    -------
+    dict[int, dict] : {거리(m): train_models() 결과}
+    """
+    def log(msg: str):
+        if log_cb:
+            log_cb(msg)
+
+    def prog(v: float):
+        if progress_cb:
+            progress_cb(int(v))
+
+    df = pd.read_csv(csv_path)
+    exclude = {"fid", "FID", "grid_x", "grid_y", target_col}
+    all_features = [c for c in df.columns if c not in exclude]
+
+    dist_map = parse_distances(all_features)
+    if not dist_map:
+        raise ValueError(
+            "컬럼명에서 버퍼 거리를 파싱할 수 없습니다.\n"
+            "전처리 CSV가 올바른지 확인하세요 (예: slope_100m_mean)."
+        )
+
+    log(f"감지된 거리: {list(dist_map.keys())} m")
+    all_results: dict[int, dict] = {}
+    n = len(dist_map)
+
+    for i, (dist, cols) in enumerate(dist_map.items()):
+        log(f"\n{'='*40}")
+        log(f"  거리 {dist}m  ({len(cols)}개 변수)")
+        log(f"{'='*40}")
+        dist_dir = os.path.join(output_dir, f"{dist}m") if output_dir else None
+
+        results = train_models(
+            csv_path=csv_path,
+            target_col=target_col,
+            selected_models=selected_models,
+            task_type=task_type,
+            test_size=test_size,
+            cv_folds=cv_folds,
+            tune=tune,
+            n_iter=n_iter,
+            output_dir=dist_dir,
+            feature_cols_override=cols,
+            progress_cb=lambda v, _i=i: prog(_i / n * 100 + v / n),
+            log_cb=log_cb,
+        )
+
+        if results and dist_dir:
+            chart_dir = os.path.join(dist_dir, "charts")
+            generate_charts(results, task_type, chart_dir)
+
+        all_results[dist] = results
+
+    # Cross-distance comparison chart
+    if output_dir and all_results:
+        _generate_distance_comparison(all_results, task_type, output_dir)
+
+    prog(100)
+    return all_results
+
+
+def _generate_distance_comparison(
+    all_results: dict[int, dict], task_type: str, output_dir: str
+):
+    """거리별 최고 성능 모델의 지표를 한 눈에 비교하는 차트."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    primary = "R2" if task_type == "regression" else "F1_weighted"
+    secondary = "RMSE" if task_type == "regression" else "Accuracy"
+
+    distances, primary_vals, secondary_vals, best_models = [], [], [], []
+
+    for dist, results in sorted(all_results.items()):
+        if not results:
+            continue
+        # Best model by primary metric
+        best = max(
+            results.items(),
+            key=lambda kv: kv[1]["metrics"].get(primary, -np.inf),
+        )
+        bname, bres = best
+        distances.append(dist)
+        primary_vals.append(bres["metrics"].get(primary, np.nan))
+        secondary_vals.append(bres["metrics"].get(secondary, np.nan))
+        best_models.append(bname)
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+    x = np.arange(len(distances))
+    bars1 = ax1.bar(x, primary_vals, color="steelblue", edgecolor="black")
+    ax1.set_ylabel(primary, fontsize=12)
+    ax1.set_title("거리별 최고 모델 성능 비교", fontsize=14, fontweight="bold")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels([f"{d}m\n({m})" for d, m in zip(distances, best_models)], fontsize=9)
+    for bar, v in zip(bars1, primary_vals):
+        if not np.isnan(v):
+            ax1.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.01,
+                     f"{v:.4f}", ha="center", va="bottom", fontsize=8)
+
+    bars2 = ax2.bar(x, secondary_vals, color="coral", edgecolor="black")
+    ax2.set_ylabel(secondary, fontsize=12)
+    ax2.set_xlabel("버퍼 거리 (m)", fontsize=12)
+    for bar, v in zip(bars2, secondary_vals):
+        if not np.isnan(v):
+            ax2.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.01,
+                     f"{v:.4f}", ha="center", va="bottom", fontsize=8)
+
+    plt.tight_layout()
+    p = os.path.join(output_dir, "distance_comparison.png")
+    plt.savefig(p, dpi=150, bbox_inches="tight")
+    plt.close()

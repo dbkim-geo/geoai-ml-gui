@@ -68,6 +68,7 @@ class TrainTab(QWidget):
         tl.addWidget(self._build_input_group())
         tl.addWidget(self._build_model_group())
         tl.addWidget(self._build_train_options_group())
+        tl.addWidget(self._build_distance_group())
         tl.addWidget(self._build_output_group())
 
         scroll = QScrollArea()
@@ -274,6 +275,49 @@ class TrainTab(QWidget):
 
         return gb
 
+    # --- Distance-based modeling ---
+    def _build_distance_group(self) -> QGroupBox:
+        gb = QGroupBox("거리별 모델링 (선택)")
+        lay = QVBoxLayout(gb)
+
+        # Enable checkbox
+        self._chk_dist = QCheckBox("거리별 모델링 활성화")
+        self._chk_dist.toggled.connect(self._toggle_dist_options)
+        lay.addWidget(self._chk_dist)
+
+        # Options (disabled by default)
+        self._dist_options_widget = QWidget()
+        opt_lay = QVBoxLayout(self._dist_options_widget)
+        opt_lay.setContentsMargins(20, 0, 0, 0)
+
+        self._radio_per_dist = QRadioButton(
+            "개별 거리별 모델  — 각 버퍼 거리마다 독립적인 모델을 학습하고 성능 비교"
+        )
+        self._radio_mgwr = QRadioButton(
+            "MGWR 컨셉  — 변수별로 타겟과 상관성이 가장 높은 거리를 자동 선택 후 단일 모델 학습"
+        )
+        self._radio_per_dist.setChecked(True)
+        bg = QButtonGroup(self)
+        bg.addButton(self._radio_per_dist)
+        bg.addButton(self._radio_mgwr)
+        opt_lay.addWidget(self._radio_per_dist)
+        opt_lay.addWidget(self._radio_mgwr)
+
+        # MGWR score description
+        mgwr_note = QLabel(
+            "   ※ MGWR 선택 기준: 회귀=Spearman 상관계수, 분류=Mutual Information"
+        )
+        mgwr_note.setStyleSheet("color: gray; font-size: 10px;")
+        opt_lay.addWidget(mgwr_note)
+
+        self._dist_options_widget.setEnabled(False)
+        lay.addWidget(self._dist_options_widget)
+
+        return gb
+
+    def _toggle_dist_options(self, checked: bool):
+        self._dist_options_widget.setEnabled(checked)
+
     # --- Output group ---
     def _build_output_group(self) -> QGroupBox:
         gb = QGroupBox("출력")
@@ -367,6 +411,7 @@ class TrainTab(QWidget):
             "n_iter": self._n_iter.value(),
             "output_dir": out_dir,
             "run_shap": self._chk_shap.isChecked(),
+            "distance_mode": self._get_distance_mode(),
         }
 
         self._log.clear()
@@ -386,11 +431,49 @@ class TrainTab(QWidget):
     def _on_finished(self, results: dict):
         self._progress.setValue(100)
         self._btn_run.setEnabled(True)
-        self._results = results
         self._log.append("\n[완료] 학습 종료")
-        self._populate_metrics_table(results)
-        self._load_charts(results)
-        self.model_trained.emit(results)
+
+        mode = results.get("_mode")
+
+        if mode == "per_distance":
+            # {_mode, _data: {dist: {model_name: result}}}
+            self._results = results
+            all_dist_results = results["_data"]
+            # Show summary: best model per distance
+            self._log.append("\n[거리별 최고 성능]")
+            flat = {}  # for chart loading
+            for dist, dist_res in sorted(all_dist_results.items()):
+                if not dist_res:
+                    continue
+                task = list(dist_res.values())[0].get("task_type", "regression")
+                key = "R2" if task == "regression" else "F1_weighted"
+                best = max(dist_res.items(), key=lambda kv: kv[1]["metrics"].get(key, -1e9))
+                self._log.append(f"  {dist}m → {best[0]}  {key}={best[1]['metrics'].get(key, 0):.4f}")
+                for mname, res in dist_res.items():
+                    flat[f"{mname} ({dist}m)"] = res
+            self._populate_metrics_table(flat)
+            self._load_charts_per_distance(all_dist_results)
+            self.model_trained.emit(flat)
+
+        elif mode == "mgwr":
+            inner = results.get("_data", {})
+            self._results = inner
+            sel_df = results.get("_selection")
+            if sel_df is not None:
+                self._log.append("\n[MGWR 변수별 최적 거리 선택 결과]")
+                selected = sel_df[sel_df["selected"] == True]
+                for _, row in selected.iterrows():
+                    self._log.append(f"  {row['variable']}: {int(row['distance_m'])}m  (score={row['score']:.4f})")
+            self._populate_metrics_table(inner)
+            self._load_charts(inner)
+            self.model_trained.emit(inner)
+
+        else:
+            self._results = results
+            self._populate_metrics_table(results)
+            self._load_charts(results)
+            self.model_trained.emit(results)
+
         QMessageBox.information(self, "완료", "모델 학습 완료!")
 
     def _on_error(self, msg: str):
@@ -464,6 +547,40 @@ class TrainTab(QWidget):
     def _show_selected_chart(self, index: int):
         if 0 <= index < len(self._chart_paths):
             self._canvas.show_image(self._chart_paths[index])
+
+    def _get_distance_mode(self) -> str:
+        if not self._chk_dist.isChecked():
+            return "none"
+        if self._radio_mgwr.isChecked():
+            return "mgwr"
+        return "per_distance"
+
+    def _load_charts_per_distance(self, all_dist_results: dict):
+        """거리별 모드: 각 거리의 차트 + 전체 비교 차트를 콤보박스에 추가."""
+        out_dir = self._out_dir_edit.text().strip()
+        self._chart_paths.clear()
+        chart_names = []
+
+        # Overall comparison
+        p = os.path.join(out_dir, "distance_comparison.png")
+        if os.path.isfile(p):
+            self._chart_paths.append(p)
+            chart_names.append("거리별 성능 비교")
+
+        # Per-distance charts
+        for dist in sorted(all_dist_results.keys()):
+            for fname, label in [
+                ("performance_comparison.png", f"성능 비교 ({dist}m)"),
+                ("actual_vs_predicted.png", f"실측 vs 예측 ({dist}m)"),
+            ]:
+                p = os.path.join(out_dir, f"{dist}m", "charts", fname)
+                if os.path.isfile(p):
+                    self._chart_paths.append(p)
+                    chart_names.append(label)
+
+        self._chart_combo.addItems(chart_names)
+        if chart_names:
+            self._show_selected_chart(0)
 
     # ------------------------------------------------------------------
     # Public API (called by MainWindow)
