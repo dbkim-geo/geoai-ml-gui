@@ -60,6 +60,29 @@ def predict_and_save(
     log(f"특성 변수: {len(feature_cols)}개  |  포인트: {len(df):,}개")
 
     X = df[feature_cols].copy()
+
+    # 모델이 학습한 피처 목록에 맞춰 컬럼 정렬
+    # (범주형 클래스가 학습/예측 영역마다 달라질 수 있음)
+    if hasattr(model, "feature_names_in_"):
+        train_cols = list(model.feature_names_in_)
+    elif hasattr(model, "get_booster") and hasattr(model.get_booster(), "feature_names"):
+        train_cols = model.get_booster().feature_names or []
+    else:
+        train_cols = []
+
+    if train_cols:
+        missing = [c for c in train_cols if c not in X.columns]
+        extra   = [c for c in X.columns  if c not in train_cols]
+        if missing:
+            log(f"  [컬럼 정렬] 학습에 있었으나 예측 CSV에 없는 컬럼 {len(missing)}개 → 0 채움")
+            for c in missing:
+                X[c] = 0
+        if extra:
+            log(f"  [컬럼 정렬] 예측 CSV에만 있는 컬럼 {len(extra)}개 → 제거")
+            X = X.drop(columns=extra)
+        X = X[train_cols]  # 순서까지 일치시킴
+        log(f"  피처 정렬 완료: {len(train_cols)}개")
+
     prog(20)
 
     # Handle NaN
