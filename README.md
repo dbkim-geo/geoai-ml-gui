@@ -204,6 +204,30 @@ scikit-learn · matplotlib · shapely · pyproj · scipy · joblib · shap
 
 ---
 
-## 라이선스
+## 인용 / Citation
 
-연구 및 실험 목적으로 자유롭게 사용 가능합니다.
+이 도구를 연구에 활용하신다면, 아래 관련 논문을 인용해 주시기 바랍니다.
+
+If you use this tool in your research, please cite the relevant papers below.
+
+---
+
+Lee, G., Cho, Y., Han, Y., & Kim, G. (2025). Characterizing the relationship between the spatial range of influence of urban land characteristics and surface temperature using geospatial explainable artificial intelligence models. *International Journal of Digital Earth*, 18(2), 2583833.
+
+Kim, G., Cho, Y., Lee, J. H., & Lee, G. (2025). Correlation analysis between urban environment features and crime occurrence based on explainable artificial intelligence techniques. *Journal of Asian Architecture and Building Engineering*, 24(6), 5751–5770.
+
+Ha, J., Lee, J., Lee, G., & Kim, G. (2025). A methodology to support species selection decisions for planting trees in urban spaces using explainable AI. *Environmental Research Communications*, 7(11), 115019.
+
+Kim, G., Cho, Y., Han, Y., & Lee, G. (2025). Crime mapping in urban environments using explainable AI: A case study of Daegu, Korea. *Sustainable Cities and Society*, 130, 106507.
+
+Gunwon, L., Yuhan, H., & Kim, G. (2025). Impact of land use characteristics on air pollutant concentrations considering the spatial range of influence. *Atmospheric Pollution Research*, 16(6), 102498.
+
+김근한. (2023). GeoXAI를 활용한 서울시 탄소흡수 예측지도 제작. *한국기후변화학회지*, 14(6-1), 871–879.
+
+이준우, 한유한, 이정택, 박진혁, & 김근한. (2023). 식생지수를 활용한 LULUCF 정주지 온실가스인벤토리 산정을 위한 수목탐지 방법 개발. *Korean Journal of Remote Sensing*, 39(6-3), 1721–1730.
+
+Kim, M., Kim, D., Jin, D., & Kim, G. (2023). Application of explainable artificial intelligence (XAI) in urban growth modeling: A case study of Seoul metropolitan area, Korea. *Land*, 12(2), 420.
+
+Kim, M., Kim, D., & Kim, G. (2022). Examining the relationship between land use/land cover (LULC) and land surface temperature (LST) using explainable artificial intelligence (XAI) models: A case study of Seoul, South Korea. *International Journal of Environmental Research and Public Health*, 19(23), 15926.
+
+Kim, M., & Kim, G. (2022). Modeling and predicting urban expansion in South Korea using explainable artificial intelligence (XAI) model. *Applied Sciences*, 12(18), 9169.
